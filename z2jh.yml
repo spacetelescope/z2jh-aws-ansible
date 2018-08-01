@@ -1,0 +1,372 @@
+---
+  - hosts: all
+
+    user: ec2-user
+
+    environment:
+      - AWS_REGION: "{{ aws_region }}"
+      - KOPS_STATE_STORE: s3://{{ namespace }}-s3
+
+    tasks:
+      ## install packages ##
+      - name: Check to see if pip is already installed
+        command: "/usr/bin/pip --version"
+        ignore_errors: true
+        register: pip_is_installed
+        changed_when: false
+
+      - block:
+        - name: Download get-pip.py
+          get_url:
+            url: https://bootstrap.pypa.io/get-pip.py
+            dest: /tmp
+
+        - name: Install pip
+          command: "python /tmp/get-pip.py"
+          register: pip_log
+          become: yes
+
+        - name: Delete get-pip.py
+          file:
+            state: absent
+            path: /tmp/get-pip.py
+        when: pip_is_installed.rc != 0
+
+      - name: Install boto3
+        pip:
+          name: boto3
+          executable: /usr/bin/pip
+        become: yes
+
+      - name: Check for kops package
+        command: which kops
+        failed_when: false
+        changed_when: false
+        register: kops
+
+      - block:
+        - name: Download kops
+          shell: wget -O kops https://github.com/kubernetes/kops/releases/download/$(curl -s https://api.github.com/repos/kubernetes/kops/releases/latest | grep tag_name | cut -d '"' -f 4)/kops-linux-amd64
+          args:
+            chdir: /home/ec2-user
+            creates: kops
+
+        - name: Modify perms to install kops
+          file:
+            dest: /home/ec2-user/kops
+            mode: "+x"
+
+        - name: Install kops
+          command: mv /home/ec2-user/kops /usr/local/bin
+          args:
+            creates: /usr/local/bin/kops
+          become: yes
+        when: kops.rc
+
+      - name: Check for kubectl package
+        command: which kubectl
+        failed_when: false
+        changed_when: false
+        register: kubectl
+
+      - block:
+        - name: Download kubectl
+          shell: wget -O kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+          args:
+            chdir: /home/ec2-user
+          creates: /home/ec2-user/kubectl
+        - name: Modify perms to install kubectl
+          file:
+            dest: /home/ec2-user/kubectl
+            mode: "+x"
+        - name: Install kubectl
+          command: mv /home/ec2-user/kubectl /usr/local/bin
+          args:
+            creates: /usr/local/bin/kubectl
+          become: yes
+        when: kubectl.rc
+
+      - name: Check for helm package
+        command: which helm
+        failed_when: false
+        changed_when: false
+        register: helm
+
+      - name: Install helm
+        shell: curl https://raw.githubusercontent.com/kubernetes/helm/master/scripts/get | bash
+        when: helm.rc
+
+      ## Create kuberenetes (k8s) cluster
+      - name: Provision s3 instance
+        aws_s3:
+          bucket: "{{ namespace }}-s3"
+          mode: create
+        register: s3_log
+
+      - name: Create SSH key
+        command: ssh-keygen -f /home/ec2-user/.ssh/id_rsa -C '' -N ''
+        args:
+          creates: /home/ec2-user/.ssh/id_rsa
+
+      - name: Check to see if Kubernetes is already installed
+        command: kubectl cluster-info
+        failed_when: False
+        changed_when: False
+        register: kci_log
+
+      - name: Create Kubernetes cluster
+        command: kops create cluster {{ namespace }}.k8s.local \
+          --zones us-east-1a,us-east-1b,us-east-1c,us-east-1d,us-east-1e,us-east-1f \
+          --authorization RBAC \
+          --master-size t2.micro \
+          --master-volume-size 10 \
+          --node-size t2.medium \
+          --node-volume-size 10 \
+          --yes
+        args:
+          chdir: /home/ec2-user
+        register: k8s_log
+        when: kci_log.rc
+
+      - name: Verify that kops setup is complete
+        shell: kops validate cluster | grep "True" | wc -l
+        register: kops_result
+        until: kops_result.stdout.find('3') != -1
+        retries: 20
+        delay: 60
+        changed_when: False
+
+      - name: Verify that all Kubernetes nodes are ready
+        shell: kubectl get nodes | grep "Ready" | wc -l
+        register: kc_result
+        until: kc_result.stdout.find('3') != -1
+        retries: 20
+        delay: 60
+        changed_when: False
+
+      # Enable dynamic storage on your Kubernetes cluster
+      - name: Create storageclass.yaml config file
+        template:
+          src: storageclass.yaml.j2
+          dest: /home/ec2-user/storageclass.yaml
+
+      - command: kubectl apply -f /home/ec2-user/storageclass.yaml
+
+      # Create filesystem for k8s
+      - ec2_group_facts:
+          filters:
+            group_name: masters.{{ namespace }}.k8s.local
+        register: sg_master_facts
+
+      - ec2_group_facts:
+          filters:
+            group_name: nodes.{{ namespace }}.k8s.local
+        register: sg_nodes_facts
+
+      - ec2_vpc_net_facts:
+          filters:
+            "tag:Name": "{{ namespace }}.k8s.local"
+        register: vpc_facts
+
+      - ec2_vpc_subnet_facts:
+          filters:
+            vpc-id: "{{ vpc_facts['vpcs'][0]['vpc_id'] }}"
+        register: subnet_facts
+
+      - efs_facts:
+        register: efs_facts
+
+      # use the jinja map function to return the subnet_ids as a list
+      - name: subnet_facts
+        set_fact:
+          subnet_ids: "{{ subnet_facts.subnets|map(attribute='id')|list }}"
+
+      - name: Create NFS Security Group
+        ec2_group:
+          name: "{{ namespace }}.nfs"
+          description: "{{ namespace }}.nfs"
+          vpc_id: "{{ vpc_facts['vpcs'][0]['vpc_id'] }}"
+          tags:
+            name: "{{ namespace }}.nfs"
+          rules:
+            - proto: tcp
+              from_port: 2049
+              to_port: 2049
+              group_id: "{{ sg_master_facts['security_groups'][0]['group_id'] }}"
+            - proto: tcp
+              from_port: 2049
+              to_port: 2049
+              group_id: "{{ sg_nodes_facts['security_groups'][0]['group_id'] }}"
+          rules_egress:
+            - proto: all
+              cidr_ip: 0.0.0.0/0
+        register: nfs_sg_log
+
+      # Provide all subnets from your Kubernetes VPC (each AZ)
+      - name: Provision EFS
+        efs:
+          state: present
+          name: "{{ namespace }}-efs"
+          tags:
+            Name: "{{ namespace }}-efs"
+          targets:
+            - subnet_id: "{{ subnet_facts['subnets'][0]['subnet_id'] }}"
+              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
+            - subnet_id: "{{ subnet_facts['subnets'][1]['subnet_id'] }}"
+              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
+            - subnet_id: "{{ subnet_facts['subnets'][2]['subnet_id'] }}"
+              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
+            - subnet_id: "{{ subnet_facts['subnets'][3]['subnet_id'] }}"
+              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
+            - subnet_id: "{{ subnet_facts['subnets'][4]['subnet_id'] }}"
+              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
+            - subnet_id: "{{ subnet_facts['subnets'][5]['subnet_id'] }}"
+              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
+        register: efs_log
+
+      - name: Store EFS ID
+        set_fact:
+          efs_id: "{{ efs_log['efs']['mount_targets'][0]['file_system_id'] }}"
+
+      - name: Check for kube namespace
+        command: kubectl get namespace {{ namespace }}
+        failed_when: False
+        changed_when: False
+        register: get_kube_namespace
+
+      - name: Create kube namespace
+        shell: kubectl create namespace {{ namespace }}
+        when: get_kube_namespace.rc != 0
+        args:
+          chdir: /home/ec2-user
+
+      - name: Check for persistent volume
+        command: kubectl get pv
+        register: pv_log
+        changed_when: False
+
+      ## Configure persistent volume ##
+      - block:
+        - name: Create pv_efs.yaml config file
+          template:
+            src: pv_efs.yaml.j2
+            dest: /home/ec2-user/pv_efs.yaml
+
+        - name: Apply kube pv config
+          command: kubectl --namespace={{ namespace }} apply -f /home/ec2-user/pv_efs.yaml
+          register: kube_config_1
+          changed_when: kube_config_1.stdout.find('unchanged') == -1
+          args:
+            chdir: /home/ec2-user
+        when: pv_log.stdout.find('efs-persist') == -1
+
+      - name: Check for persistent volume claim
+        command: kubectl get pvc --namespace={{ namespace }}
+        register: pvc_log
+        changed_when: False
+
+      ## Configure persistent volume claim ##
+      - block:
+        - name: Create pvc_efs.yaml config file
+          template:
+            src: pvc_efs.yaml.j2
+            dest: /home/ec2-user/pvc_efs.yaml
+
+        - name: Apply kube pvc config
+          command: kubectl --namespace={{ namespace }} apply -f /home/ec2-user/pvc_efs.yaml
+          register: kube_config_1
+          changed_when: kube_config_1.stdout.find('unchanged') == -1
+          args:
+            chdir: /home/ec2-user
+        when: pvc_log.stdout.find('efs-persist') == -1
+
+      ## Connect helm/tiller
+      - name: Determine if Helm and Tiller are connected already
+        command: helm version --tiller-connection-timeout 30
+        failed_when: False
+        changed_when: False
+        register: helmver_result
+        async: 45
+        poll: 5
+
+        ## Create Tiller Account ##
+      - block:
+          - name: Create tiller account
+            command: kubectl --namespace kube-system create serviceaccount tiller
+            args:
+              chdir: /home/ec2-user
+
+          - name: Create clusterrolebinding for tiller
+            command: kubectl create clusterrolebinding tiller --clusterrole cluster-admin --serviceaccount=kube-system:tiller
+            args:
+              chdir: /home/ec2-user
+
+          - name: Initialize tiller
+            command: helm init --service-account tiller
+            args:
+              chdir: /home/ec2-user
+
+          - name: Verify that helm and tiller have connected
+            command: helm version --tiller-connection-timeout 30
+            register: cmd_result
+            until: cmd_result.stdout.find('Server') != -1
+            retries: 20
+            delay: 60
+            args:
+              chdir: /home/ec2-user
+
+          - name: Ensure that Tiller is secure from access inside the cluster
+            shell: |
+              kubectl --namespace=kube-system patch deployment tiller-deploy --type=json --patch='[{"op": "add", "path": "/spec/template/spec/containers/0/command", "value": ["/tiller", "--listen=localhost:44134"]}]'
+            args:
+              chdir: /home/ec2-user
+
+        when: helmver_result.stdout is undefined or
+          helmver_result.stdout.find('Server') == -1
+
+      # configure and create jupyterhub
+      - name: Create security token
+        command: openssl rand -hex 32
+        register: os
+
+      - name: Create config file for JupyterHub
+        template:
+          src: config.yaml.j2
+          dest: /home/ec2-user/config.yaml
+
+      - name: Add JupyterHub repo
+        command: helm repo add jupyterhub https://jupyterhub.github.io/helm-chart/
+        args:
+          chdir: /home/ec2-user
+
+      - name: Update JupyterHub
+        command: helm repo update
+        args:
+          chdir: /home/ec2-user
+
+      ## Avoid 'unable to find ready tiller pod' error ##
+      - name: sleep for 60 seconds and continue with play
+        wait_for: timeout=60
+        delegate_to: localhost
+
+      - name: Check for JupyterHub installation
+        command: helm list
+        register: hl_log
+        changed_when: False
+
+      - name: Install JupyterHub chart
+        shell: helm install jupyterhub/jupyterhub \
+          --debug \
+          --version=v0.6 \
+          --name={{ namespace }}-jupyterhub \
+          --namespace={{ namespace }} \
+          -f config.yaml
+        args:
+          chdir: /home/ec2-user
+        when: hl_log.stdout.find(namespace + '-jupyterhub') == -1
+
+      - name: Get URL for public proxy
+        command: kubectl --namespace=cob4-autogen describe svc proxy-public
+        register: pp_log
+
+      - debug: msg="Navigate browser to {{ pp_log.stdout_lines[10] }} to begin using JupyterHub!"
