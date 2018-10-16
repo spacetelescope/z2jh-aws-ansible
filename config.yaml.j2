@@ -1,9 +1,10 @@
 proxy:
   secretToken: "{{ os.stdout }}"
 singleuser:
+  defaultUrl: "/lab"
   image:
-    name: jupyter/base-notebook
-    tag: latest
+    name: {{ singleuser_image_repo }}
+    tag: {{ singleuser_image_tag }}
   storage:
     type: "static"
     static:
@@ -14,3 +15,44 @@ singleuser:
   uid: 0
   fsGid: 0
   cmd: "start-singleuser.sh"
+hub:
+  extraConfig: |
+    from kubespawner.spawner import KubeSpawner
+    c.JupyterHub.spawner_class = KubeSpawner
+    profiles = [
+        {
+            'display_name': 'jupyter/base-notebook',
+            'kubespawner_override': {
+                'image_spec': 'jupyter/base-notebook',
+                'cpu_limit': 1,
+                'mem_limit': '2G',
+            }
+        }
+    ]
+    def dynamic_profile_list(spawner, **kwargs):
+        if(spawner.handler):
+            image = spawner.handler.get_query_argument("image", "")
+
+            cpu_limit = spawner.handler.get_query_argument("cpu_limit", 2)
+            if cpu_limit > 4: cpu_limit = 4
+
+            mem_limit = spawner.handler.get_query_argument("mem_limit", "2G")
+            mem_number = int(mem_limit[:-1])
+            if ((mem_limit.endswith('G') and mem_number > 8) or
+                  (mem_limit.endswith('M') and mem_number > 8000) or
+                  (mem_limit.endswith('K') and mem_number > 8000000) or
+                  (mem_limit.endswith('B') and mem_number > 8000000000)):
+                mem_limit="8G"
+            if image:
+                return profiles + [
+                    {
+                        'display_name': image,
+                        'default': True,
+                        'kubespawner_override': {
+                            'image_spec': image
+                        }
+                    }
+                ]
+        return profiles
+    c.KubeSpawner.profile_list = dynamic_profile_list
+    c.KubeSpawner.start_timeout = 60 * 15

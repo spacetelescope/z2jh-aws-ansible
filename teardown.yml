@@ -1,0 +1,120 @@
+---
+  #### Jupyterhub to Zero #### tear down up through -> helm release of jupyterhub, kubernetes, aws fixtures
+  - hosts: all
+
+    user: ec2-user
+
+    environment:
+      - AWS_REGION: "{{ aws_region }}"
+      - KOPS_STATE_STORE: s3://{{ namespace }}-s3
+
+    tasks:
+      - name: Install boto3
+        pip:
+          name: boto
+          executable: /usr/bin/pip
+        become: yes
+        tags: always
+
+      ## Idempotent delete helm release of JH
+      - name: Determine if Helm and Tiller are connected already
+        command: helm version --tiller-connection-timeout 30
+        failed_when: False
+        changed_when: False
+        register: helmver_result
+        async: 45
+        poll: 5
+        tags: always
+
+      - name: Determine if JH is currently installed.
+        command: helm status {{ namespace }}-jupyterhub
+        register: jh_installed_result
+        failed_when: False
+        tags: always
+
+        # delete the Helm release. This deletes all resources that were created
+        # by Helm for your JupyterHub deployment
+      - name: Delete helm release
+        command: helm delete {{ namespace }}-jupyterhub --purge
+        when: helmver_result.stdout is defined and not helmver_result.rc and not jh_installed_result.rc
+        tags: always
+
+      - name: Check for kube namespace
+        command: kubectl get namespace {{ namespace }}
+        failed_when: False
+        changed_when: False
+        register: get_kube_namespace
+        tags:
+          - never
+          - kubernetes
+          - all-fixtures
+
+        # Next, delete the Kubernetes namespace the hub was installed in.
+        # This deletes any disks that may have been created to store user’s
+        # data, and any IP addresses that may have been provisioned.
+      - name: Delete kubernetes namespace
+        command: kubectl delete namespace {{ namespace }}
+        when: not get_kube_namespace.rc
+        tags:
+          - never
+          - kubernetes
+          - all-fixtures
+
+      ## For example, only delete the EFS if you specifically run with tag 'all-fixtures' or 'fixture-efs'
+      - name: Delete EFS fs
+        efs:
+          state: absent
+          name: "{{ namespace }}-efs"
+        tags:
+          - all-fixtures
+          - fixture-efs
+          - never
+
+      # delete security groups
+      # - name: Delete Security Groups
+      #   ec2_group:
+      #     name: "{{ namespace }}.nfs"
+      #     state: absent
+      #   tags:
+      #     - all-fixtures
+      #     - kubernetes
+      #     - never
+
+      - name: Delete kubernetes
+        shell: kops delete cluster {{ namespace }}.k8s.local --yes
+        tags:
+          - all-fixtures
+          - kubernetes
+          - never
+
+      - name: Delete S3 bucket
+        aws_s3:
+          bucket: "{{ namespace }}-s3"
+          mode: delete
+          # ec2_url: ec2-54-172-77-177.compute-1.amazonaws.com
+        register: s3_log
+        tags:
+          - all-fixtures
+          - fixture-s3
+          - never
+
+      - name: Gather EC2 Facts
+        ec2_instance_facts:
+          filters:
+            "tag:Name": cob3-autogen-ci
+        register: ec2_facts
+        tags:
+          - always
+
+      - debug: var=ec2_facts
+        tags:
+          - always
+
+      - name: Delete CI node
+        ec2:
+          state: absent
+          instance_ids: "{{ ec2_facts['instances'][0]['instance_id'] }}"
+        tags:
+          - all-fixtures
+          - fixture-ci
+          - never

@@ -74,7 +74,7 @@
           shell: wget -O kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
           args:
             chdir: /home/ec2-user
-          creates: /home/ec2-user/kubectl
+            creates: /home/ec2-user/kubectl
         - name: Modify perms to install kubectl
           file:
             dest: /home/ec2-user/kubectl
@@ -96,7 +96,7 @@
         shell: curl https://raw.githubusercontent.com/kubernetes/helm/master/scripts/get | bash
         when: helm.rc
 
-      ## Create kuberenetes (k8s) cluster
+      ## Create kubernetes (k8s) cluster
       - name: Provision s3 instance
         aws_s3:
           bucket: "{{ namespace }}-s3"
@@ -120,8 +120,8 @@
           --authorization RBAC \
           --master-size t2.micro \
           --master-volume-size 10 \
-          --node-size t2.medium \
-          --node-volume-size 10 \
+          --node-size {{ node_size }} \
+          --node-volume-size {{ node_volume_size }} \
           --yes
         args:
           chdir: /home/ec2-user
@@ -150,7 +150,8 @@
           src: storageclass.yaml.j2
           dest: /home/ec2-user/storageclass.yaml
 
-      - command: kubectl apply -f /home/ec2-user/storageclass.yaml
+      - name: Apply storageclass config file
+        command: kubectl apply -f /home/ec2-user/storageclass.yaml
 
       # Create filesystem for k8s
       - ec2_group_facts:
@@ -236,7 +237,7 @@
 
       - name: Create kube namespace
         shell: kubectl create namespace {{ namespace }}
-        when: get_kube_namespace.rc != 0
+        when: get_kube_namespace.rc
         args:
           chdir: /home/ec2-user
 
@@ -307,11 +308,11 @@
               chdir: /home/ec2-user
 
           - name: Verify that helm and tiller have connected
-            command: helm version --tiller-connection-timeout 30
+            command: helm version --tiller-connection-timeout 5
             register: cmd_result
             until: cmd_result.stdout.find('Server') != -1
             retries: 20
-            delay: 60
+            delay: 60 # this value
             args:
               chdir: /home/ec2-user
 
@@ -334,12 +335,12 @@
           src: config.yaml.j2
           dest: /home/ec2-user/config.yaml
 
-      - name: Add JupyterHub repo
-        command: helm repo add jupyterhub https://jupyterhub.github.io/helm-chart/
+      - name: Add JupyterHub Helm Chart repo
+        command: helm repo add {{ helm_chart_repo_name }} {{ helm_chart_repo_url }}
         args:
           chdir: /home/ec2-user
 
-      - name: Update JupyterHub
+      - name: Update Helm chart repos
         command: helm repo update
         args:
           chdir: /home/ec2-user
@@ -349,24 +350,30 @@
         wait_for: timeout=60
         delegate_to: localhost
 
-      - name: Check for JupyterHub installation
+      - name: Check for JupyterHub helm release
         command: helm list
         register: hl_log
         changed_when: False
 
-      - name: Install JupyterHub chart
-        shell: helm install jupyterhub/jupyterhub \
+      - name: Install JupyterHub release
+        shell: helm install {{ helm_chart_repo_name }}/jupyterhub \
           --debug \
-          --version=v0.6 \
+          --version={{ jupyterhub_chart_version }} \
           --name={{ namespace }}-jupyterhub \
           --namespace={{ namespace }} \
+          --timeout=600
           -f config.yaml
         args:
           chdir: /home/ec2-user
         when: hl_log.stdout.find(namespace + '-jupyterhub') == -1
 
+      ## Wait for proxy to spin up ##
+      - name: sleep for 30 seconds and continue with play
+        wait_for: timeout=30
+        delegate_to: localhost
+
       - name: Get URL for public proxy
-        command: kubectl --namespace=cob4-autogen describe svc proxy-public
+        command: kubectl --namespace={{ namespace }} describe svc proxy-public
         register: pp_log
 
-      - debug: msg="Navigate browser to {{ pp_log.stdout_lines[10] }} to begin using JupyterHub!"
+      - debug: msg="Navigate browser to {{ pp_log.stdout_lines[11] }} to begin using JupyterHub!"
