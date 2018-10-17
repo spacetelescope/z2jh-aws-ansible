@@ -10,7 +10,7 @@ Preconditions
 * group_vars/all
     * namespace - many things are named based on this for consistency
     * aws_region
-    * ansible_ssh_private_key_file - absolute path of key file (.pem)
+    * ansible_ssh_private_key_file - absolute path of key file (.pem) which you use to ssh into the CI node
 * Ansible installed on local machine
 
 
