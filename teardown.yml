@@ -11,7 +11,15 @@
     tasks:
       - name: Install boto3
         pip:
-          name: boto
+          name: boto3
+          executable: /usr/bin/pip
+        become: yes
+        tags: always
+
+      ## Fix issue with importing AliasedEventEmitter
+      - name: Upgrade awscli
+        pip:
+          name: awscli
           executable: /usr/bin/pip
         become: yes
         tags: always
@@ -30,6 +38,7 @@
         command: helm status {{ namespace }}-jupyterhub
         register: jh_installed_result
         failed_when: False
+        changed_when: False
         tags: always
 
         # delete the Helm release. This deletes all resources that were created
@@ -60,6 +69,24 @@
           - kubernetes
           - all-fixtures
 
+      - name: Gather EFS facts
+        efs_facts:
+          name: "{{ namespace }}-efs"
+        tags:
+          - never
+          - kubernetes
+          - all-fixtures
+
+      - name: Remove EFS mount targets
+        command: aws efs delete-mount-target --region {{ aws_region }} --mount-target-id {{ item['mount_target_id'] }}
+        with_items:
+          "{{ efs[0]['mount_targets'] }}"
+        tags:
+          - never
+          - kubernetes
+          - all-fixtures
+        when: efs[0] is defined
+
       ## For example, only delete the EFS if you specifically run with tag 'all-fixtures' or 'fixture-efs'
       - name: Delete EFS fs
         efs:
@@ -71,14 +98,24 @@
           - never
 
       # delete security groups
-      # - name: Delete Security Groups
-      #   ec2_group:
-      #     name: "{{ namespace }}.nfs"
-      #     state: absent
-      #   tags:
-      #     - all-fixtures
-      #     - kubernetes
-      #     - never
+      - name: Delete NFS Security Group
+        ec2_group:
+          name: "{{ namespace }}.nfs"
+          state: absent
+        tags:
+          - all-fixtures
+          - kubernetes
+          - never
+
+      - name: Determine if cluster exists
+        shell: kops get clusters
+        tags:
+          - all-fixtures
+          - kubernetes
+          - never
+        failed_when: False
+        changed_when: False
+        register: get_cluster
 
       - name: Delete kubernetes
         shell: kops delete cluster {{ namespace }}.k8s.local --yes
@@ -86,6 +123,7 @@
           - all-fixtures
           - kubernetes
           - never
+        when: not get_cluster.rc
 
       - name: Delete S3 bucket
         aws_s3:
@@ -101,14 +139,12 @@
       - name: Gather EC2 Facts
         ec2_instance_facts:
           filters:
-            "tag:Name": cob3-autogen-ci
+            "tag:Name": "{{ namespace }}-ci"
         register: ec2_facts
         tags:
-          - always
-
-      - debug: var=ec2_facts
-        tags:
-          - always
+          - all-fixtures
+          - fixture-ci
+          - never
 
       - name: Delete CI node
         ec2:
@@ -118,3 +154,4 @@
           - all-fixtures
           - fixture-ci
           - never
+        when: ec2_facts['instances'][0] is defined
