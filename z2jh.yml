@@ -132,7 +132,7 @@
         shell: kops validate cluster | grep "True" | wc -l
         register: kops_result
         until: kops_result.stdout.find('3') != -1
-        retries: 20
+        retries: 30
         delay: 60
         changed_when: False
 
@@ -140,7 +140,7 @@
         shell: kubectl get nodes | grep "Ready" | wc -l
         register: kc_result
         until: kc_result.stdout.find('3') != -1
-        retries: 20
+        retries: 30
         delay: 60
         changed_when: False
 
