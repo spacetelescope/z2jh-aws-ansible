@@ -140,7 +140,7 @@
         shell: kubectl get nodes | grep "Ready" | wc -l
         register: kc_result
         until: kc_result.stdout.find('3') != -1
-        retries: 20
+        retries: 30
         delay: 60
         changed_when: False
 
@@ -376,4 +376,4 @@
         command: kubectl --namespace={{ namespace }} describe svc proxy-public
         register: pp_log
 
-      - debug: msg="Navigate browser to {{ pp_log.stdout_lines[11] }} to begin using JupyterHub!"
+      - debug: msg="Navigate browser to {{ pp_log.stdout_lines[10] }} to begin using JupyterHub!"
