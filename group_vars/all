@@ -1,11 +1,14 @@
 ---
-namespace: zaa-autogen
+namespace: blog2-autogen
 aws_region: us-east-1
-ansible_ssh_private_key_file: ~/.ssh/id_rsa.pub
+ansible_ssh_private_key_file: ~/.ssh/cob.pem
 node_size: t2.xlarge
 node_volume_size: 50
-jupyterhub_chart_version: 0.8-e83e959
+jupyterhub_chart_version: 0.7.0
 singleuser_image_repo: jupyter/base-notebook
 singleuser_image_tag: latest
 helm_chart_repo_name: jupyterhub
 helm_chart_repo_url: https://jupyterhub.github.io/helm-chart/
+github_client_id: replaceme
+github_client_secret: replaceme
+ingress: http://replaceme.amazonaws.com
