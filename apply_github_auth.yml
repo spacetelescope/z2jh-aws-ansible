@@ -1,0 +1,29 @@
+---
+  - hosts: all
+
+    user: ec2-user
+
+    environment:
+      - AWS_REGION: "{{ aws_region }}"
+      - KOPS_STATE_STORE: s3://{{ namespace }}-s3
+
+    tasks:
+        ## Looks like ansible doesn't have a great way to append from .j2 template yet.
+      - name: Append github config to true config
+        blockinfile:
+          path: /home/ec2-user/config.yaml
+          block: |
+            auth:
+              type: github
+              github:
+                clientId: "{{ github_client_id }}"
+                clientSecret: "{{ github_client_secret }}"
+                callbackUrl: "{{ ingress }}/hub/oauth_callback"
+            hub:
+              extraConfig:
+                autogenConfig: |
+                  from oauthenticator.github import GitHubOAuthenticator
+                  c.JupyterHub.authenticator_class = GitHubOAuthenticator
+
+      - name: Update helm release
+        command: helm upgrade -f config.yaml {{ namespace }}-jupyterhub {{ helm_chart_repo_name }}/jupyterhub
