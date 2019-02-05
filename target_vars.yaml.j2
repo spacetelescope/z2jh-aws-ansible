@@ -1,0 +1,5 @@
+target_list:
+{% for subnet in subnet_facts['subnets'] %}
+  - subnet_id: "{{ subnet['subnet_id'] }}"
+    security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
+{% endfor %}

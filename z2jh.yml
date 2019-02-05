@@ -114,9 +114,12 @@
         changed_when: False
         register: kci_log
 
+      - aws_az_facts:
+        register: az_facts
+
       - name: Create Kubernetes cluster
         command: kops create cluster {{ namespace }}.k8s.local \
-          --zones us-east-1a,us-east-1b,us-east-1c,us-east-1d,us-east-1e,us-east-1f \
+          --zones {{ az_facts.availability_zones | map(attribute='zone_name') | list | join(',') }} \
           --authorization RBAC \
           --master-size t2.micro \
           --master-volume-size 10 \
@@ -128,16 +131,20 @@
         register: k8s_log
         when: kci_log.rc
 
-      - name: Verify that kops setup is complete
+      - name: Verify that kops setup is complete - WARNING - long run time.
         shell: kops validate cluster | grep "True" | wc -l
+        args:
+          executable: /bin/bash
         register: kops_result
         until: kops_result.stdout.find('3') != -1
-        retries: 30
+        retries: 35
         delay: 60
         changed_when: False
 
       - name: Verify that all Kubernetes nodes are ready
         shell: kubectl get nodes | grep "Ready" | wc -l
+        args:
+          executable: /bin/bash
         register: kc_result
         until: kc_result.stdout.find('3') != -1
         retries: 30
@@ -203,6 +210,14 @@
               cidr_ip: 0.0.0.0/0
         register: nfs_sg_log
 
+      - name: Prepare vars file from template.
+        template: src=target_vars.yaml.j2
+                  dest=/tmp/tempvars.yaml
+        delegate_to: localhost
+
+      - name: Include vars
+        include_vars: "/tmp/tempvars.yaml"
+
       # Provide all subnets from your Kubernetes VPC (each AZ)
       - name: Provision EFS
         efs:
@@ -210,19 +225,7 @@
           name: "{{ namespace }}-efs"
           tags:
             Name: "{{ namespace }}-efs"
-          targets:
-            - subnet_id: "{{ subnet_facts['subnets'][0]['subnet_id'] }}"
-              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
-            - subnet_id: "{{ subnet_facts['subnets'][1]['subnet_id'] }}"
-              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
-            - subnet_id: "{{ subnet_facts['subnets'][2]['subnet_id'] }}"
-              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
-            - subnet_id: "{{ subnet_facts['subnets'][3]['subnet_id'] }}"
-              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
-            - subnet_id: "{{ subnet_facts['subnets'][4]['subnet_id'] }}"
-              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
-            - subnet_id: "{{ subnet_facts['subnets'][5]['subnet_id'] }}"
-              security_groups: [ "{{ nfs_sg_log['group_id'] }}" ]
+          targets: "{{ target_list }}"
         register: efs_log
 
       - name: Store EFS ID
