@@ -2,6 +2,8 @@
 
 Ansible plays intended to set up a Jupyterhub instance from scratch. z2jh.yml tracks very closely with the AWS [zero-to-jupyterhub readthedocs](https://zero-to-jupyterhub.readthedocs.io/en/stable/) and idempotently sets up a Jupyterhub cluster. teardown.yml undoes up to a given level of the total installation, governed by which tags you specify. The default will only remove the Jupyterhub release.
 
+### Read our [blog post](https://mast-labs.stsci.io/2019/02/zero-to-jupyterhub-with-ansible) to see the playbook in action!
+
 Preconditions
 ----
 * IAM role with attached policies: AmazonEC2FullAccess, IAMFullAccess, AmazonS3FullAccess, AmazonVPCFullAccess, AmazonElasticFileSystemFullAccess
