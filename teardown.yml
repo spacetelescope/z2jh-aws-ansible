@@ -70,7 +70,7 @@
           - all-fixtures
 
       - name: Gather EFS facts
-        efs_facts:
+        efs_info:
           name: "{{ namespace }}-efs"
         tags:
           - never

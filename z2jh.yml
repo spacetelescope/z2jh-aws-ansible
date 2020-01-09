@@ -161,27 +161,27 @@
         command: kubectl apply -f /home/ec2-user/storageclass.yaml
 
       # Create filesystem for k8s
-      - ec2_group_facts:
+      - ec2_group_info:
           filters:
             group_name: masters.{{ namespace }}.k8s.local
         register: sg_master_facts
 
-      - ec2_group_facts:
+      - ec2_group_info:
           filters:
             group_name: nodes.{{ namespace }}.k8s.local
         register: sg_nodes_facts
 
-      - ec2_vpc_net_facts:
+      - ec2_vpc_net_info:
           filters:
             "tag:Name": "{{ namespace }}.k8s.local"
         register: vpc_facts
 
-      - ec2_vpc_subnet_facts:
+      - ec2_vpc_subnet_info:
           filters:
             vpc-id: "{{ vpc_facts['vpcs'][0]['vpc_id'] }}"
         register: subnet_facts
 
-      - efs_facts:
+      - efs_info:
         register: efs_facts
 
       # use the jinja map function to return the subnet_ids as a list
